@@ -37,6 +37,7 @@ public class GitlabSettings {
     private boolean selfSignedCertificate;
     private boolean useProjectId = false;
     private int apiVersion;
+    private boolean considerOnlyMergeCommits = true;
 
     public String getCron() {
         return cron;
@@ -118,6 +119,12 @@ public class GitlabSettings {
         this.apiVersion = apiVersion;
     }
 
+    public boolean isConsiderOnlyMergeCommits() { return considerOnlyMergeCommits; }
+
+    public void setConsiderOnlyMergeCommits(boolean considerOnlyMergeCommits) {
+        this.considerOnlyMergeCommits = considerOnlyMergeCommits;
+    }
+
     @PostConstruct
     public void trustSelfSignedCertificatesIfNecessary() {
         if (isSelfSignedCertificate()) {
@@ -145,5 +152,4 @@ public class GitlabSettings {
             }           
         }
     }
-
 }

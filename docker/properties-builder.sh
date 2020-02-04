@@ -13,21 +13,25 @@ then
         #for testing locally
         PROP_FILE=application.properties
 else 
-	PROP_FILE=config/hygieia-gitlab-scm-collector.properties
+	PROP_FILE=/hygieia/config/application.properties
 fi
   
-if [ "$MONGO_PORT" != "" ]; then
-	# Sample: MONGO_PORT=tcp://172.17.0.20:27017
-	MONGODB_HOST=`echo $MONGO_PORT|sed 's;.*://\([^:]*\):\(.*\);\1;'`
-	MONGODB_PORT=`echo $MONGO_PORT|sed 's;.*://\([^:]*\):\(.*\);\2;'`
-else
-	env
-	echo "ERROR: MONGO_PORT not defined"
-	exit 1
-fi
+#if [ "$MONGO_PORT" != "" ]; then
+#	# Sample: MONGO_PORT=tcp://172.17.0.20:27017
+#	MONGODB_HOST=`echo $MONGO_PORT|sed 's;.*://\([^:]*\):\(.*\);\1;'`
+#	MONGODB_PORT=`echo $MONGO_PORT|sed 's;.*://\([^:]*\):\(.*\);\2;'`
+#else
+#	env
+#	echo "ERROR: MONGO_PORT not defined"
+#	exit 1
+#fi
+
+echo "Mongo stuff begins ******************************"
 
 echo "MONGODB_HOST: $MONGODB_HOST"
 echo "MONGODB_PORT: $MONGODB_PORT"
+
+echo "Mongo stuff ends ********************************"
 
 
 cat > $PROP_FILE <<EOF
@@ -65,6 +69,7 @@ gitlab.path=${GITLAB_PATH:-}
 gitlab.apiToken=${GITLAB_API_TOKEN:-}
 
 #Maximum number of days to go back in time when fetching commits
+#This seems to be unused!
 gitlab.commitThresholdDays=${GITLAB_COMMIT_THRESHOLD_DAYS:-15}
 
 #Gitlab Instance using self signed certificate
@@ -73,6 +78,9 @@ gitlab.selfSignedCertificate=${GITLAB_SELF_SIGNED_CERTIFICATE:-false}
 #Gitlab API Version (optional, defaults to current version of 4)
 gitlab.apiVersion=${GITLAB_API_VERSION:-4}
 
+gitlab.firstRunHistoryDays=${GITLAB_COMMIT_THRESHOLD_DAYS:-365}
+#Should consider only merge commits
+gitlab.considerOnlyMergeCommits=${GITLAB_CONSIDER_ONLY_MERGE_COMMITS:-true}
 EOF
 
 echo "

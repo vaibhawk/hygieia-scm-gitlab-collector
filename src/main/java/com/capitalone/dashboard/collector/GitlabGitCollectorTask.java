@@ -3,18 +3,8 @@ package com.capitalone.dashboard.collector;
 import com.capitalone.dashboard.gitlab.DefaultGitlabGitClient;
 import com.capitalone.dashboard.gitlab.GitlabGitClient;
 import com.capitalone.dashboard.misc.HygieiaException;
-import com.capitalone.dashboard.model.Collector;
-import com.capitalone.dashboard.model.CollectorItem;
-import com.capitalone.dashboard.model.CollectorType;
-import com.capitalone.dashboard.model.Commit;
-import com.capitalone.dashboard.model.CommitType;
-import com.capitalone.dashboard.model.GitRequest;
-import com.capitalone.dashboard.model.GitlabGitRepo;
-import com.capitalone.dashboard.repository.BaseCollectorRepository;
-import com.capitalone.dashboard.repository.CommitRepository;
-import com.capitalone.dashboard.repository.ComponentRepository;
-import com.capitalone.dashboard.repository.GitRequestRepository;
-import com.capitalone.dashboard.repository.GitlabGitCollectorRepository;
+import com.capitalone.dashboard.model.*;
+import com.capitalone.dashboard.repository.*;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -55,17 +45,23 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
 	private final GitlabGitClient gitlabClient;
 	private final GitlabSettings gitlabSettings;
 	private final ComponentRepository dbComponentRepository;
+	private final CollectorItemRepository collectorItemRepository;
+	private final PipelineRepository pipelineRepository;
+	private final ComponentRepository componentRepository;
+	private final DashboardRepository dashboardRepository;
 
     @Autowired
     public GitlabGitCollectorTask(TaskScheduler taskScheduler,
-                                  BaseCollectorRepository<Collector> collectorRepository,
-                                  GitlabSettings gitlabSettings,
-                                  CommitRepository commitRepository,
-                                  GitRequestRepository gitRequestRepository,
-                                  GitlabGitCollectorRepository gitlabGitCollectorRepository,
-                                  DefaultGitlabGitClient gitlabClient,
-                                  ComponentRepository dbComponentRepository
-    ) {
+								  BaseCollectorRepository<Collector> collectorRepository,
+								  GitlabSettings gitlabSettings,
+								  CommitRepository commitRepository,
+								  GitRequestRepository gitRequestRepository,
+								  GitlabGitCollectorRepository gitlabGitCollectorRepository,
+								  DefaultGitlabGitClient gitlabClient,
+								  ComponentRepository dbComponentRepository,
+								  CollectorItemRepository collectorItemRepository,
+								  PipelineRepository pipelineRepository,
+								  ComponentRepository componentRepository, DashboardRepository dashboardRepository) {
         super(taskScheduler, "Gitlab");
         this.collectorRepository = collectorRepository;
         this.gitlabSettings = gitlabSettings;
@@ -74,7 +70,11 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
         this.gitlabGitCollectorRepository = gitlabGitCollectorRepository;
         this.gitlabClient = gitlabClient;
         this.dbComponentRepository = dbComponentRepository;
-    }
+        this.collectorItemRepository = collectorItemRepository;
+        this.pipelineRepository = pipelineRepository;
+		this.componentRepository = componentRepository;
+		this.dashboardRepository = dashboardRepository;
+	}
 
 	@Override
 	public Collector getCollector() {
@@ -120,7 +120,8 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
 
         clean(collector);
         for (GitlabGitRepo repo : enabledRepos(collector)) {
-			boolean isRepoFirstRun = isFirstRun(start, repo.getLastUpdated());
+			List<Commit> initialCommits = commitRepository.findByCollectorItemIdAndScmCommitTimestamp(collector.getId(), 0L);
+			boolean isRepoFirstRun = (initialCommits == null || initialCommits.isEmpty()) || isFirstRun(start, repo.getLastUpdated());
 			// moved last update date to collector item. This is to clean old data.
 			repo.removeLastUpdateDate();
 
@@ -129,6 +130,7 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
 				LOG.info(repo.getOptions().toString() + "::" + repo.getBranch() + ":: get commits");
 				List<Commit> commits = gitlabClient.getCommits(repo, isRepoFirstRun);
 				commitCount = saveNewCommits(commitCount, repo, commits);
+				processPipelineCommits(commits);
 
 				// Step 2: Get all the issues
 				LOG.info(repo.getOptions().toString() + "::" + repo.getBranch() + " get issues");
@@ -157,6 +159,9 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
 
 			} catch (MalformedURLException | HygieiaException ex) {
 				LOG.error("Error fetching commits for:" + repo.getRepoUrl(), ex);
+			} catch (Exception e) {
+				LOG.error("XDFCE error");
+				e.printStackTrace();
 			}
 			
 			repoCount++;
@@ -184,8 +189,7 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
     }
 
 	private boolean isFirstRun(long start, long lastUpdated) {
-		boolean firstRun = ((lastUpdated == 0) || ((start - lastUpdated) > FOURTEEN_DAYS_MILLISECONDS));
-		return firstRun;
+		return ((lastUpdated == 0) || ((start - lastUpdated) > FOURTEEN_DAYS_MILLISECONDS));
 	}
 
 	private int saveNewCommits(int commitCount, GitlabGitRepo repo, List<Commit> commits) {
@@ -199,6 +203,67 @@ public class GitlabGitCollectorTask  extends CollectorTask<Collector> {
 			}
 		}
 		return totalCommitCount;
+	}
+
+	/**
+	 * Finds or creates a pipeline for a dashboard collectoritem
+	 * @param collectorItem
+	 * @return
+	 */
+	protected Pipeline getOrCreatePipeline(CollectorItem collectorItem) {
+		Pipeline pipeline = pipelineRepository.findByCollectorItemId(collectorItem.getId());
+		if(pipeline == null){
+			pipeline = new Pipeline();
+			pipeline.setCollectorItemId(collectorItem.getId());
+		}
+		return pipeline;
+	}
+
+	private void processPipelineCommits(List<Commit> commits) {
+		List<Commit> commitsToConsider = commits;
+
+		if (gitlabSettings.isConsiderOnlyMergeCommits()) {
+			LOG.info("Considering only merge commits to be added on the pipeline collection...");
+			commitsToConsider = commits.stream()
+					.filter(c -> c.getScmParentRevisionNumbers().size() > 1).collect(Collectors.toList());
+		}
+		if (commitsToConsider.isEmpty()) {
+			LOG.info("No commits to be added on the pipeline collection during this scheduled run...");
+			return;
+		}
+		List<Dashboard> allDashboardsForCommit = findAllDashboardsForCommit(commitsToConsider.get(0));
+		String environmentName = PipelineStage.COMMIT.getName();
+		List<Collector> collectorList = collectorRepository.findByCollectorType(CollectorType.Product);
+		List<CollectorItem> collectorItemList = collectorItemRepository.findByCollectorIdIn(collectorList.stream().map(BaseModel::getId).collect(Collectors.toList()));
+
+		for (CollectorItem collectorItem : collectorItemList) {
+			List<String> dashBoardIds = allDashboardsForCommit.stream().map(d -> d.getId().toString()).collect(Collectors.toList());
+			boolean dashboardId = dashBoardIds.contains(collectorItem.getOptions().get("dashboardId").toString());
+			if(dashboardId) {
+				Pipeline pipeline = getOrCreatePipeline(collectorItem);
+
+				Map<String, EnvironmentStage> environmentStageMap = pipeline.getEnvironmentStageMap();
+				if (environmentStageMap.get(environmentName) == null) {
+					environmentStageMap.put(environmentName, new EnvironmentStage());
+				}
+
+				EnvironmentStage environmentStage = environmentStageMap.get(environmentName);
+				if(environmentStage.getCommits() == null) {
+					environmentStage.setCommits(new HashSet<>());
+				}
+				environmentStage.getCommits().addAll(commitsToConsider.stream()
+						.map(commit -> new PipelineCommit(commit, commit.getTimestamp())).collect(Collectors.toSet()));
+				pipelineRepository.save(pipeline);
+			}
+		}
+	}
+
+	private List<Dashboard> findAllDashboardsForCommit(Commit commit){
+		if (commit.getCollectorItemId() == null) return new ArrayList<>();
+		CollectorItem commitCollectorItem = collectorItemRepository.findOne(commit.getCollectorItemId());
+		List<com.capitalone.dashboard.model.Component> components = componentRepository.findBySCMCollectorItemId(commitCollectorItem.getId());
+		List<ObjectId> componentIds = components.stream().map(BaseModel::getId).collect(Collectors.toList());
+		return dashboardRepository.findByApplicationComponentIdsIn(componentIds);
 	}
 
 	private int processList(GitlabGitRepo repo, List<GitRequest> entries, String type) {

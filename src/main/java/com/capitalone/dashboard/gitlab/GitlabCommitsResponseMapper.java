@@ -29,7 +29,7 @@ public class GitlabCommitsResponseMapper {
         CommitType commitType = parentSize > 1 ? CommitType.Merge : CommitType.New;
         
         Commit commit = new Commit();
-        commit.setTimestamp(System.currentTimeMillis());
+        commit.setTimestamp(timestamp);
         commit.setScmUrl(repoUrl);
         commit.setScmBranch(branch);
         commit.setScmRevisionNumber(gitlabCommit.getId());
